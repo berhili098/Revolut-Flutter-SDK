@@ -1,3 +1,13 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-  package="com.example.revolut_sdk_bridge">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Required by the Revolut Pay SDK for network access. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Android 11+ package visibility: allows the Revolut Pay SDK to detect and launch
+         the Revolut app for the app-to-app payment flow. Bundled here so host apps don't
+         have to declare it themselves. -->
+    <queries>
+        <package android:name="com.revolut.revolut" />
+        <package android:name="com.revolut.revolut.test" />
+    </queries>
 </manifest>

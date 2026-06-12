@@ -10,7 +10,7 @@ export 'android/revolut_sdk_bridge_platform_interface.dart'
     hide RevolutSdkException;
 export 'android/services/revolut_callbacks.dart';
 export 'android/widgets/revolut_pay_button.dart'
-    hide RevolutPayButton, RevolutPayPromoBanner, SimpleRevolutPayButton;
+    hide RevolutPayButton, RevolutPayPromoBanner;
 // iOS exports
 export 'ios/revolut_sdk_bridge.dart';
 export 'ios/revolut_sdk_bridge_method_channel.dart' hide RevolutSdkException;

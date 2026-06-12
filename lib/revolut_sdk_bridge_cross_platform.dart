@@ -25,6 +25,7 @@ class CrossPlatformRevolutPayButton extends StatelessWidget {
 
   // Android-specific parameters
   final ButtonParamsData? buttonParams;
+  final String? preferredMode;
 
   // iOS-specific parameters
   final double? height;
@@ -55,6 +56,7 @@ class CrossPlatformRevolutPayButton extends StatelessWidget {
     this.merchantLogoURL,
     this.additionalData,
     this.buttonParams,
+    this.preferredMode,
     this.height,
     this.width,
     this.margin,
@@ -85,6 +87,7 @@ class CrossPlatformRevolutPayButton extends StatelessWidget {
         merchantName: merchantName,
         merchantLogoURL: merchantLogoURL,
         additionalData: additionalData,
+        preferredMode: preferredMode,
         onPressed: onPressed,
         onPaymentSuccess: onPaymentResult,
         onPaymentError: (error, details) => onPaymentError?.call(error),
@@ -329,6 +332,11 @@ class RevolutSdkBridge {
   /// [merchantName] - Merchant name to display
   /// [merchantLogoURL] - Merchant logo URL
   /// [additionalData] - Additional data for the payment
+  /// Imperative button creation is not supported.
+  ///
+  /// Render the [CrossPlatformRevolutPayButton] widget instead — it creates and
+  /// displays the native Revolut Pay button and reports the payment result.
+  @Deprecated('Render the CrossPlatformRevolutPayButton widget instead.')
   Future<Map<String, dynamic>?> createPaymentButton({
     required String orderToken,
     required int amount,
@@ -342,58 +350,25 @@ class RevolutSdkBridge {
     String? merchantLogoURL,
     Map<String, dynamic>? additionalData,
   }) async {
-    try {
-      if (isAndroid) {
-        // Android implementation
-        final result = await android.RevolutSdkBridgeMethodChannel(
-          android.RevolutCallbacks(),
-        ).provideButton(buttonParams: buttonParams?.toMap());
-
-        return {'buttonId': result.buttonId, 'success': result.success, 'platform': 'android'};
-      } else if (isIOS) {
-        // iOS implementation
-        return await ios.RevolutSdkBridgeIos.createRevolutPayButtonIos(
-          orderToken: orderToken,
-          amount: amount,
-          currency: currency,
-          email: email,
-          shouldRequestShipping: shouldRequestShipping,
-          savePaymentMethodForMerchant: savePaymentMethodForMerchant,
-          returnURL: returnURL,
-          merchantName: merchantName,
-          merchantLogoURL: merchantLogoURL,
-          additionalData: additionalData,
-        );
-      } else {
-        throw UnsupportedError('Platform not supported');
-      }
-    } catch (e) {
-      debugPrint('Failed to create payment button: $e');
-      rethrow;
-    }
+    throw UnsupportedError(
+      'createPaymentButton() is not supported. Render the CrossPlatformRevolutPayButton '
+      'widget instead — it displays the native Revolut Pay button and reports results.',
+    );
   }
 
   /// Create a promotional banner (Android only)
   ///
   /// [promoParams] - Promotional banner parameters
   /// [themeId] - Theme ID for the banner
+  /// Imperative banner creation is not supported.
+  ///
+  /// Render the [CrossPlatformRevolutPayPromoBanner] widget instead (Android only).
+  @Deprecated('Render the CrossPlatformRevolutPayPromoBanner widget instead.')
   Future<BannerResultData?> createPromotionalBanner({PromoBannerParamsData? promoParams, String? themeId}) async {
-    try {
-      if (isAndroid) {
-        // Android implementation
-        return await android.RevolutSdkBridgeMethodChannel(
-          android.RevolutCallbacks(),
-        ).providePromotionalBannerWidget(promoParams: promoParams?.toMap(), themeId: themeId);
-      } else if (isIOS) {
-        // iOS doesn't support promotional banners
-        throw UnsupportedError('Promotional banners not supported on iOS');
-      } else {
-        throw UnsupportedError('Platform not supported');
-      }
-    } catch (e) {
-      debugPrint('Failed to create promotional banner: $e');
-      rethrow;
-    }
+    throw UnsupportedError(
+      'createPromotionalBanner() is not supported. Render the CrossPlatformRevolutPayPromoBanner '
+      'widget instead (Android only).',
+    );
   }
 
   /// Dispose a controller
@@ -569,30 +544,18 @@ class RevolutSdkBridge {
   /// [themeId] - Optional theme ID for styling
   ///
   /// Returns a Map with banner details
+  /// Imperative banner creation is not supported.
+  ///
+  /// Render the [CrossPlatformRevolutPayPromoBanner] widget instead (Android only).
+  @Deprecated('Render the CrossPlatformRevolutPayPromoBanner widget instead.')
   Future<Map<String, dynamic>?> providePromotionalBannerWidget({
     required Map<String, dynamic> promoParams,
     String? themeId,
   }) async {
-    try {
-      if (isAndroid) {
-        // Android implementation
-        final result = await android.RevolutSdkBridgeMethodChannel(
-          android.RevolutCallbacks(),
-        ).providePromotionalBannerWidget(promoParams: promoParams, themeId: themeId);
-        return result.toMap();
-      } else if (isIOS) {
-        // iOS implementation
-        return await ios.RevolutSdkBridgeIos.providePromotionalBannerWidgetIos(
-          promoParams: promoParams,
-          themeId: themeId,
-        );
-      } else {
-        throw UnsupportedError('Platform not supported');
-      }
-    } catch (e) {
-      debugPrint('Failed to provide promotional banner: $e');
-      rethrow;
-    }
+    throw UnsupportedError(
+      'providePromotionalBannerWidget() is not supported. Render the '
+      'CrossPlatformRevolutPayPromoBanner widget instead (Android only).',
+    );
   }
 
   /// Set order token on a controller

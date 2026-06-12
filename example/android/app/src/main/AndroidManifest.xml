@@ -6,8 +6,9 @@
     <!-- Network state permission for Revolut SDK -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- Query all packages permission for deep linking -->
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- NOTE: QUERY_ALL_PACKAGES is intentionally NOT used. It is a Play Store
+         restricted permission. The Revolut app is made visible via the scoped
+         <queries> entry below, which is the correct approach. -->
 
     <application
         android:label="revolut_sdk_bridge_example"

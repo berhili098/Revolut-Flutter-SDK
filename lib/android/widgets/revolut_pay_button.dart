@@ -39,6 +39,8 @@ class RevolutPayButton extends StatefulWidget {
   /// Additional data for the payment
   final Map<String, dynamic>? additionalData;
 
+  final String? preferredMode;
+
   /// Callback when button is clicked
   /// Note: The native button handles clicks directly and triggers the payment flow.
   final VoidCallback? onPressed;
@@ -86,6 +88,7 @@ class RevolutPayButton extends StatefulWidget {
     this.merchantName,
     this.merchantLogoURL,
     this.additionalData,
+    this.preferredMode,
     this.onPressed,
     this.onPaymentSuccess,
     this.onPaymentError,
@@ -167,6 +170,7 @@ class _RevolutPayButtonState extends State<RevolutPayButton> {
       'merchantName': widget.merchantName,
       'merchantLogoURL': widget.merchantLogoURL,
       'additionalData': widget.additionalData,
+      'preferredMode': widget.preferredMode,
     };
 
     return Container(

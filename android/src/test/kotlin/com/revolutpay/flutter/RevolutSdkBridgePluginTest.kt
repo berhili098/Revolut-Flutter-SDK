@@ -1,4 +1,4 @@
-package com.example.revolut_sdk_bridge
+package com.revolutpay.flutter
 
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel

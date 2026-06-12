@@ -1,7 +1,9 @@
 name: revolut_sdk_bridge
-description: "A Flutter plugin that provides a bridge to the native Revolut SDK for both Android and iOS platforms."
-version: 1.0.0
-homepage: https://github.com/your-username/revolut_sdk_bridge
+description: "Flutter plugin for accepting Revolut Pay payments via the native Revolut Pay SDKs on Android and iOS."
+version: 0.1.0
+homepage: https://github.com/berhili098/Revolut-Flutter-SDK
+repository: https://github.com/berhili098/Revolut-Flutter-SDK
+issue_tracker: https://github.com/berhili098/Revolut-Flutter-SDK/issues
 
 environment:
   sdk: ^3.9.0
@@ -36,7 +38,7 @@ flutter:
   plugin:
     platforms:
       android:
-        package: com.example.revolut_sdk_bridge
+        package: com.revolutpay.flutter
         pluginClass: RevolutSdkBridgePlugin
       ios:
         pluginClass: RevolutSdkBridgePlugin

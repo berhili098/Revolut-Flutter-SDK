@@ -1,4 +1,4 @@
-package com.example.revolut_sdk_bridge
+package com.revolutpay.flutter
 
 import android.app.Activity
 import android.content.Context
@@ -34,8 +34,13 @@ import com.revolut.revolutpay.api.button.Size
 import com.revolut.revolutpay.api.button.Variant
 import com.revolut.revolutpay.api.button.VariantModes
 import com.revolut.revolutpay.api.order.OrderParams
+import com.revolut.revolutpay.api.order.PreferredMode
+import com.revolut.revolutpay.api.order.Customer
 import com.revolut.revolutpay.api.revolutPay
 import com.revolut.revolutpay.api.bindPaymentState
+import com.revolut.revolutpay.api.CountryCode
+import com.revolut.revolutpay.api.promobanner.PromoBannerParams
+import com.revolut.payments.RevolutCurrency
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -51,6 +56,7 @@ class RevolutSdkBridgePlugin: FlutterPlugin, MethodCallHandler, ActivityAware, N
         private const val EVENT_CHANNEL_NAME = "revolut_sdk_bridge_events"
         private const val LOG_CHANNEL_NAME = "revolut_sdk_bridge_logs"
         private const val VIEW_TYPE_BUTTON = "revolut_pay_button"
+        private const val VIEW_TYPE_PROMO_BANNER = "revolut_pay_promo_banner"
         private const val TAG = "RevolutSdkBridgePlugin"
     }
 
@@ -62,11 +68,13 @@ class RevolutSdkBridgePlugin: FlutterPlugin, MethodCallHandler, ActivityAware, N
     private var eventSink: EventSink? = null
     private var flutterPluginBinding: FlutterPlugin.FlutterPluginBinding? = null
     
-    // Storage for buttons and controllers
-    private val buttonViews = mutableMapOf<Int, View>()
+    // Storage for active button platform views (used by the platform view layer)
     val buttonViewInstances = mutableMapOf<Int, RevolutPayButtonView>()
-    private val controllerStates = mutableMapOf<String, MutableMap<String, Any>>()
-    private var nextViewId = 1
+
+    // Controller reused by the one-shot pay() (custom button) flow
+    private var oneShotController: RevolutPaymentController? = null
+    private var oneShotControllerActivity: ComponentActivity? = null
+
     private var isInitialized = false
     private var currentEnvironment: RevolutPaymentsSDK.Environment? = null
     private var currentEnvironmentLabel: String? = null
@@ -96,29 +104,32 @@ class RevolutSdkBridgePlugin: FlutterPlugin, MethodCallHandler, ActivityAware, N
         // Setup log channel for callbacks
         logChannel = MethodChannel(flutterPluginBinding.binaryMessenger, LOG_CHANNEL_NAME)
         
-        // Register platform view factory
+        // Register platform view factories
         flutterPluginBinding.platformViewRegistry.registerViewFactory(
             VIEW_TYPE_BUTTON,
             RevolutPayButtonViewFactory(flutterPluginBinding.binaryMessenger, this)
+        )
+        flutterPluginBinding.platformViewRegistry.registerViewFactory(
+            VIEW_TYPE_PROMO_BANNER,
+            RevolutPayPromoBannerViewFactory(this)
         )
     }
 
     override fun onMethodCall(@NonNull call: MethodCall, @NonNull result: Result) {
         when (call.method) {
             "init" -> handleInitialize(call, result)
-            "createRevolutPayButton" -> handleCreateRevolutPayButton(call, result)
-            "provideButton" -> handleProvideButton(call, result)
-            "cleanupButton" -> handleCleanupButton(call, result)
-            "cleanupAllButtons" -> handleCleanupAllButtons(call, result)
             "getPlatformVersion" -> handleGetPlatformVersion(call, result)
             "getSdkVersion" -> handleGetSdkVersion(call, result)
             "pay" -> handlePay(call, result)
-            "createController" -> handleCreateController(call, result)
-            "disposeController" -> handleDisposeController(call, result)
-            "setOrderToken" -> handleSetOrderToken(call, result)
-            "setSavePaymentMethodForMerchant" -> handleSetSavePaymentMethodForMerchant(call, result)
-            "continueConfirmationFlow" -> handleContinueConfirmationFlow(call, result)
-            "providePromotionalBannerWidget" -> handleProvidePromotionalBannerWidget(call, result)
+            // The Revolut Pay Lite SDK exposes no manual "confirmation flow" / controller
+            // API. These method names used to be fake stubs that returned success without
+            // doing anything. They now fail honestly — use the RevolutPayButton widget for
+            // the standard flow, or pay() to drive your own button.
+            "createController",
+            "disposeController",
+            "setOrderToken",
+            "setSavePaymentMethodForMerchant",
+            "continueConfirmationFlow" -> handleUnsupportedConfirmationFlow(call, result)
             else -> result.notImplemented()
         }
     }
@@ -206,9 +217,9 @@ class RevolutSdkBridgePlugin: FlutterPlugin, MethodCallHandler, ActivityAware, N
 
     private fun handleGetSdkVersion(call: MethodCall, result: Result) {
         try {
-            // Get SDK version information
+            // Reports the bundled native Revolut Pay (Lite) SDK version.
             result.success(mapOf(
-                "version" to "2.8.0",
+                "version" to "3.2.0",
                 "platform" to "Android",
                 "buildNumber" to "1"
             ))
@@ -225,504 +236,140 @@ class RevolutSdkBridgePlugin: FlutterPlugin, MethodCallHandler, ActivityAware, N
         }
     }
 
+    /**
+     * One-shot payment for merchants that render their own ("custom") button.
+     *
+     * Mirrors Revolut's official Lite SDK "custom button" sample: a
+     * [RevolutPaymentController] is bound to the host Activity, then
+     * controller.pay(OrderParams) is invoked. The host Activity MUST be a
+     * ComponentActivity (use FlutterFragmentActivity). The final outcome is
+     * delivered asynchronously over the event channel (onOrderCompleted /
+     * onOrderFailed / onUserPaymentAbandoned); this call only reports that the
+     * flow was started.
+     */
     private fun handlePay(call: MethodCall, result: Result) {
         try {
+            if (!isInitialized) {
+                result.error("NOT_INITIALIZED", "SDK not initialized. Call init() first.", null)
+                return
+            }
+
             val orderToken = call.argument<String>("orderToken") ?: ""
-            val savePaymentMethodForMerchant = call.argument<Boolean>("savePaymentMethodForMerchant") ?: false
-            
             if (orderToken.isEmpty()) {
                 result.error("INVALID_ARGUMENTS", "orderToken is required", null)
                 return
             }
-            
-            // TODO: Implement actual payment flow with Revolut SDK
-            // For now, return success to prevent crashes
-            result.success(true)
-            
-            // Send event to Flutter side
+            val savePaymentMethodForMerchant = call.argument<Boolean>("savePaymentMethodForMerchant") ?: false
+            val requestShipping = call.argument<Boolean>("shouldRequestShipping") ?: false
+            val returnUrlString = call.argument<String>("returnURL") ?: "revolut-sdk-bridge://revolut-pay"
+            val preferredMode = resolvePreferredMode(call.argument<String>("preferredMode"))
+
+            val activity = activityBinding?.activity
+            if (activity !is ComponentActivity) {
+                logToDart(
+                    "ERROR",
+                    "pay() requires the host Activity to be a ComponentActivity. " +
+                        "Make MainActivity extend FlutterFragmentActivity."
+                )
+                result.error(
+                    "ACTIVITY_NOT_SUPPORTED",
+                    "Host Activity must be a ComponentActivity (extend FlutterFragmentActivity) to take payments.",
+                    null
+                )
+                return
+            }
+
+            val returnUri = runCatching { Uri.parse(returnUrlString) }.getOrNull()
+            if (returnUri == null) {
+                result.error("INVALID_ARGUMENTS", "Invalid returnURL: $returnUrlString", null)
+                return
+            }
+
+            val controller = ensureOneShotController(activity)
+            if (controller == null) {
+                result.error("CONTROLLER_UNAVAILABLE", "Unable to create Revolut payment controller.", null)
+                return
+            }
+
+            val orderParams = OrderParams(
+                orderToken = orderToken,
+                returnUri = returnUri,
+                requestShipping = requestShipping,
+                savePaymentMethodForMerchant = savePaymentMethodForMerchant,
+                customer = null,
+                preferredMode = preferredMode
+            )
+
+            logToDart("INFO", "Starting one-shot payment for order token: $orderToken")
+            controller.pay(orderParams)
+
+            // The real outcome arrives asynchronously through the event channel.
+            result.success(mapOf(
+                "status" to "initiated",
+                "orderToken" to orderToken
+            ))
             sendEvent("onPaymentStatusUpdate", mapOf(
                 "status" to "initiated",
                 "orderToken" to orderToken
             ))
         } catch (e: Exception) {
+            logToDart("ERROR", "Failed to initiate payment: ${e.message}")
             result.error("PAY_ERROR", "Failed to initiate payment: ${e.message}", null)
         }
     }
 
-    private fun handleCreateRevolutPayButton(call: MethodCall, result: Result) {
-        try {
-            val args = call.arguments as? Map<String, Any>
-            val orderToken = args?.get("orderToken") as? String
-            val amount = args?.get("amount") as? Int
-            val currency = args?.get("currency") as? String
-            val email = args?.get("email") as? String
-            
-            if (orderToken.isNullOrEmpty() || amount == null || currency.isNullOrEmpty() || email.isNullOrEmpty()) {
-                logToDart("ERROR", "Missing required arguments for button creation")
-                result.error("INVALID_ARGUMENTS", "Missing required arguments", null)
-                return
+    /** Lazily creates (and reuses) a payment controller bound to the host Activity. */
+    private fun ensureOneShotController(activity: ComponentActivity): RevolutPaymentController? {
+        val existing = oneShotController
+        if (existing != null && oneShotControllerActivity === activity) {
+            return existing
+        }
+        return try {
+            val controller = RevolutPaymentsSDK.revolutPay.createController(activity) { paymentResult ->
+                handleOneShotPaymentResult(paymentResult)
             }
-            
-            if (!isInitialized) {
-                logToDart("ERROR", "Revolut Pay SDK not initialized")
-                result.error("NOT_INITIALIZED", "SDK not initialized", null)
-                return
-            }
-            
-            // Extract optional parameters
-            val shouldRequestShipping = args?.get("shouldRequestShipping") as? Boolean ?: false
-            val savePaymentMethodForMerchant = args?.get("savePaymentMethodForMerchant") as? Boolean ?: false
-            val returnURL = args?.get("returnURL") as? String ?: "revolut-sdk-bridge://revolut-pay"
-            val merchantName = args?.get("merchantName") as? String
-            val merchantLogoURL = args?.get("merchantLogoURL") as? String
-            val additionalData = args?.get("additionalData") as? Map<String, Any>
-            
-            logToDart("INFO", "Creating Revolut Pay button with order token: $orderToken")
-            logToDart("INFO", "Button parameters - Amount: $amount $currency, Email: $email, Shipping: $shouldRequestShipping, Save: $savePaymentMethodForMerchant")
-            
-            // Generate the view ID first
-            val viewId = nextViewId
-            nextViewId += 1
+            oneShotController = controller
+            oneShotControllerActivity = activity
+            controller
+        } catch (e: Exception) {
+            logToDart("ERROR", "Failed to create payment controller: ${e.message}")
+            null
+        }
+    }
 
-            logCurrentConfiguration("handleCreateRevolutPayButton(viewId=$viewId)")
-            
-            // Create the actual Revolut Pay button using the SDK
-            val button = createRevolutPayButton(
-                orderToken = orderToken,
-                amount = amount,
-                currency = currency,
-                email = email,
-                shouldRequestShipping = shouldRequestShipping,
-                savePaymentMethodForMerchant = savePaymentMethodForMerchant,
-                returnURL = returnURL,
-                viewId = viewId
+    private fun handleOneShotPaymentResult(paymentResult: PaymentResult) {
+        when (paymentResult) {
+            PaymentResult.Success -> sendEvent(
+                "onOrderCompleted",
+                mapOf<String, Any>("success" to true, "timestamp" to System.currentTimeMillis())
             )
-            
-            // Store the button with the generated ID
-            buttonViews[viewId] = button
-            
-            logToDart("SUCCESS", "Revolut Pay button created successfully with viewId: $viewId")
-            logToDart("INFO", "Button stored in buttonViews with key: $viewId")
-            logToDart("INFO", "Total buttons stored: ${buttonViews.size}")
-            
-            // Return the button configuration
-            val buttonConfig = mapOf(
-                "buttonCreated" to true,
-                "viewId" to viewId,
-                "buttonId" to viewId,
-                "orderToken" to orderToken,
-                "amount" to amount,
-                "currency" to currency,
-                "email" to email,
-                "shouldRequestShipping" to shouldRequestShipping,
-                "savePaymentMethodForMerchant" to savePaymentMethodForMerchant,
-                "returnURL" to returnURL,
-                "merchantName" to (merchantName ?: ""),
-                "merchantLogoURL" to (merchantLogoURL ?: ""),
-                "additionalData" to (additionalData ?: emptyMap<String, Any>()),
-                "type" to "revolut_pay_button",
-                "message" to "Revolut Pay button configuration created successfully"
+            is PaymentResult.UserAbandonedPayment -> sendEvent(
+                "onUserPaymentAbandoned",
+                mapOf<String, Any>("success" to false, "timestamp" to System.currentTimeMillis())
             )
-            
-            result.success(buttonConfig)
-        } catch (e: Exception) {
-            logToDart("ERROR", "Failed to create Revolut Pay button: ${e.message}")
-            result.error("CREATE_BUTTON_ERROR", "Failed to create Revolut Pay button: ${e.message}", null)
-        }
-    }
-
-    private fun handleProvideButton(call: MethodCall, result: Result) {
-        try {
-            logToDart("INFO", "handleProvideButton called")
-            
-            val args = call.arguments as? Map<String, Any>
-            
-            // Extract all required parameters with safe type casting
-            val orderToken = args?.get("orderToken")?.toString()
-            val amount = when (val amountValue = args?.get("amount")) {
-                is Int -> amountValue
-                is Double -> amountValue.toInt()
-                is String -> amountValue.toIntOrNull() ?: 0
-                else -> 0
-            }
-            val currency = args?.get("currency")?.toString()
-            val email = args?.get("email")?.toString()
-            val shouldRequestShipping = when (val shippingValue = args?.get("shouldRequestShipping")) {
-                is Boolean -> shippingValue
-                is String -> shippingValue.toBoolean()
-                else -> false
-            }
-            val savePaymentMethodForMerchant = when (val saveValue = args?.get("savePaymentMethodForMerchant")) {
-                is Boolean -> saveValue
-                is String -> saveValue.toBoolean()
-                else -> false
-            }
-            val returnURL = args?.get("returnURL")?.toString()
-            val merchantName = args?.get("merchantName")?.toString()
-            val merchantLogoURL = args?.get("merchantLogoURL")?.toString()
-            val additionalData = args?.get("additionalData") as? Map<String, Any>
-            
-            // Validate required parameters
-            if (orderToken.isNullOrEmpty()) {
-                logToDart("ERROR", "Missing orderToken in provideButton call")
-                result.error("INVALID_ARGUMENTS", "Missing orderToken", null)
-                return
-            }
-            
-            if (amount == null || amount <= 0) {
-                logToDart("ERROR", "Missing or invalid amount in provideButton call")
-                result.error("INVALID_ARGUMENTS", "Missing or invalid amount", null)
-                return
-            }
-            
-            if (currency.isNullOrEmpty()) {
-                logToDart("ERROR", "Missing currency in provideButton call")
-                result.error("INVALID_ARGUMENTS", "Missing currency", null)
-                return
-            }
-            
-            if (email.isNullOrEmpty()) {
-                logToDart("ERROR", "Missing email in provideButton call")
-                result.error("INVALID_ARGUMENTS", "Missing email", null)
-                return
-            }
-            
-            // Generate a unique view ID for this button
-            val viewId = nextViewId++
-
-            logCurrentConfiguration("handleProvideButton(viewId=$viewId)")
-            
-            // Create the actual Revolut Pay button with all the payment data
-            val button = createRevolutPayButton(
-                orderToken = orderToken,
-                amount = amount,
-                currency = currency,
-                email = email,
-                shouldRequestShipping = shouldRequestShipping,
-                savePaymentMethodForMerchant = savePaymentMethodForMerchant,
-                returnURL = returnURL ?: "",
-                viewId = viewId
+            is PaymentResult.Failure -> sendEvent(
+                "onOrderFailed",
+                mapOf<String, Any>(
+                    "success" to false,
+                    "error" to (paymentResult.exception.message ?: "payment_failure"),
+                    "cause" to (paymentResult.exception.message ?: "payment_failure"),
+                    "timestamp" to System.currentTimeMillis()
+                )
             )
-            
-            // Store the button for the platform view
-            buttonViews[viewId] = button
-            logToDart("DEBUG", "Button stored in buttonViews with viewId: $viewId. Total buttons: ${buttonViews.size}")
-            
-            // Create button configuration for the platform view
-            val buttonConfig = mapOf<String, Any>(
-                "viewId" to viewId,
-                "buttonId" to viewId.toString(),
-                "success" to true,
-                "orderToken" to orderToken,
-                "amount" to amount,
-                "currency" to currency,
-                "email" to email,
-                "timestamp" to System.currentTimeMillis()
-            )
-            
-            logToDart("SUCCESS", "Button provided successfully with viewId: $viewId, orderToken: $orderToken")
-            result.success(buttonConfig)
-            
-        } catch (e: Exception) {
-            logToDart("ERROR", "Failed to provide button: ${e.message}")
-            result.error("PROVIDE_BUTTON_ERROR", "Failed to provide button: ${e.message}", null)
         }
     }
 
-    private fun createRevolutPayButton(
-        orderToken: String,
-        amount: Int,
-        currency: String,
-        email: String,
-        shouldRequestShipping: Boolean,
-        savePaymentMethodForMerchant: Boolean,
-        returnURL: String,
-        viewId: Int
-    ): View {
-        try {
-            logToDart("INFO", "Creating actual Revolut Pay button with SDK")
-            
-            // Build ButtonParams from the arguments according to official docs
-            val finalParams = ButtonParams(
-                buttonSize = Size.LARGE,
-                radius = Radius.MEDIUM,
-                variantModes = VariantModes(lightMode = Variant.DARK, darkMode = Variant.LIGHT),
-                boxText = BoxText.NONE
-            )
-            
-            // Create the actual Revolut Pay button using the SDK as per official docs
-            val button = RevolutPaymentsSDK.revolutPay.provideButton(
-                context = context,
-                params = finalParams
-            )
-            
-            // Set up click listener for payment processing
-            button.setOnClickListener {
-                handleButtonClick(orderToken, amount, currency, email, shouldRequestShipping, savePaymentMethodForMerchant, returnURL, viewId)
-            }
-            
-            logToDart("SUCCESS", "Native Revolut Pay button created successfully")
-            return button
-            
-        } catch (e: Exception) {
-            logToDart("ERROR", "Failed to create Revolut Pay button: ${e.message}")
-            throw e
-        }
-    }
-    
-    private fun handleButtonClick(
-        orderToken: String,
-        amount: Int,
-        currency: String,
-        email: String,
-        shouldRequestShipping: Boolean,
-        savePaymentMethodForMerchant: Boolean,
-        returnURL: String,
-        viewId: Int
-    ) {
-        try {
-            logToDart("INFO", "Processing button click, order token: $orderToken")
-            
-            // Send button click event
-            sendEvent("onButtonClick", mapOf(
-                "buttonId" to viewId.toString(),
-                "orderToken" to orderToken,
-                "timestamp" to System.currentTimeMillis()
-            ))
-            
-            // In a real implementation, this would trigger the Revolut payment flow
-            // For now, we'll simulate a successful payment after a short delay
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                sendPaymentResult(true, "Payment completed successfully", null, viewId, orderToken)
-            }, 1000)
-            
-        } catch (e: Exception) {
-            logToDart("ERROR", "Button click handling error: ${e.message}")
-            sendPaymentResult(false, "Payment failed", e.message, viewId, orderToken)
-        }
-    }
-    
-    private fun sendPaymentResult(success: Boolean, message: String, error: String?, viewId: Int, orderToken: String) {
-        val resultData = mapOf(
-            "success" to success,
-            "message" to message,
-            "error" to (error ?: ""),
-            "timestamp" to (System.currentTimeMillis() / 1000.0),
-            "viewId" to viewId,
-            "orderToken" to orderToken
-        )
-        
-        // Send result through event channel for logging
-        if (success) {
-            sendEvent("onOrderCompleted", mapOf<String, Any>(
-                "success" to true,
-                "orderId" to (orderToken ?: ""),
-                "orderToken" to (orderToken ?: ""),
-                "timestamp" to System.currentTimeMillis(),
-                "additionalData" to resultData
-            ))
-        } else {
-            sendEvent("onOrderFailed", mapOf<String, Any>(
-                "success" to false,
-                "error" to (error ?: ""),
-                "cause" to (error ?: ""),
-                "timestamp" to System.currentTimeMillis(),
-                "additionalData" to resultData
-            ))
-        }
-        
-        logToDart("INFO", "Payment result sent to Flutter: $resultData")
-    }
-
-    private fun handleCleanupButton(call: MethodCall, result: Result) {
-        try {
-            val args = call.arguments as? Map<String, Any>
-            val viewId = args?.get("viewId") as? Int
-            
-            if (viewId == null) {
-                logToDart("ERROR", "Missing viewId for button cleanup")
-                result.error("INVALID_ARGUMENTS", "Missing viewId", null)
-                return
-            }
-            
-            val success = recreateButton(viewId)
-            result.success(success)
-        } catch (e: Exception) {
-            logToDart("ERROR", "Failed to cleanup button: ${e.message}")
-            result.error("CLEANUP_BUTTON_ERROR", "Failed to cleanup button: ${e.message}", null)
-        }
-    }
-    
-    private fun handleCleanupAllButtons(call: MethodCall, result: Result) {
-        try {
-            cleanupAllButtons()
-            result.success(true)
-        } catch (e: Exception) {
-            logToDart("ERROR", "Failed to cleanup all buttons: ${e.message}")
-            result.error("CLEANUP_ALL_BUTTONS_ERROR", "Failed to cleanup all buttons: ${e.message}", null)
-        }
-    }
-    
-    private fun recreateButton(viewId: Int): Boolean {
-        val oldButton = buttonViews[viewId]
-        if (oldButton == null) {
-            logToDart("WARNING", "Button with viewId $viewId not found for recreation")
-            return false
-        }
-        
-        // Remove the old button
-        buttonViews.remove(viewId)
-        buttonViewInstances.remove(viewId)
-        
-        logToDart("INFO", "Cleaned up old button with viewId: $viewId")
-        return true
-    }
-    
-    private fun cleanupAllButtons() {
-        for ((viewId, button) in buttonViews) {
-            logToDart("INFO", "Cleaned up button with viewId: $viewId")
-        }
-        buttonViews.clear()
-        buttonViewInstances.clear()
-        nextViewId = 1 // Reset the ID counter
-        logToDart("INFO", "All buttons cleaned up, ID counter reset")
-    }
-
-    private fun handleProvidePromotionalBannerWidget(call: MethodCall, result: Result) {
-        try {
-            val args = call.arguments as? Map<String, Any>
-            val promoParams = args?.get("promoParams") as? Map<String, Any>
-            val themeId = args?.get("themeId") as? String
-            
-            if (promoParams == null) {
-                logToDart("ERROR", "Missing promotional banner parameters")
-                result.error("INVALID_ARGUMENTS", "Missing promotional banner parameters", null)
-                return
-            }
-            
-            logToDart("INFO", "Creating promotional banner widget with params: $promoParams")
-            
-            // Android promotional banner implementation
-            val bannerResult = mapOf(
-                "bannerCreated" to true,
-                "themeId" to (themeId ?: "default"),
-                "platform" to "Android",
-                "message" to "Android promotional banner widget created successfully",
-                "note" to "Android promotional banner implementation"
-            )
-            
-            logToDart("SUCCESS", "Promotional banner created: $bannerResult")
-            result.success(bannerResult)
-        } catch (e: Exception) {
-            logToDart("ERROR", "Failed to provide banner: ${e.message}")
-            result.error("PROVIDE_BANNER_ERROR", "Failed to provide banner: ${e.message}", null)
-        }
-    }
-
-    private fun handleCreateController(call: MethodCall, result: Result) {
-        try {
-            logToDart("INFO", "Creating payment controller")
-            
-            val controllerId = "android_controller_${System.currentTimeMillis()}"
-            
-            // Store controller state
-            controllerStates[controllerId] = mutableMapOf(
-                "isActive" to true,
-                "canContinue" to false,
-                "orderToken" to "",
-                "savePaymentMethod" to false
-            )
-            
-            val controllerResult = mapOf(
-                "controllerId" to controllerId,
-                "isActive" to true,
-                "canContinue" to false,
-                "platform" to "Android",
-                "message" to "Android payment controller created successfully"
-            )
-            
-            logToDart("SUCCESS", "Controller created: $controllerResult")
-            result.success(controllerResult)
-        } catch (e: Exception) {
-            logToDart("ERROR", "Failed to create controller: ${e.message}")
-            result.error("CREATE_CONTROLLER_ERROR", "Failed to create controller: ${e.message}", null)
-        }
-    }
-
-    private fun handleSetOrderToken(call: MethodCall, result: Result) {
-        try {
-            val orderToken = call.argument<String>("orderToken") ?: ""
-            val controllerId = call.argument<String>("controllerId") ?: ""
-            
-            if (orderToken.isEmpty() || controllerId.isEmpty()) {
-                result.error("INVALID_ARGUMENTS", "orderToken and controllerId are required", null)
-                return
-            }
-            
-            // TODO: Implement actual order token setting with Revolut SDK
-            // For now, return success to prevent crashes
-            result.success(true)
-        } catch (e: Exception) {
-            result.error("SET_ORDER_TOKEN_ERROR", "Failed to set order token: ${e.message}", null)
-        }
-    }
-
-    private fun handleSetSavePaymentMethodForMerchant(call: MethodCall, result: Result) {
-        try {
-            val savePaymentMethodForMerchant = call.argument<Boolean>("savePaymentMethodForMerchant") ?: false
-            val controllerId = call.argument<String>("controllerId") ?: ""
-            
-            if (controllerId.isEmpty()) {
-                result.error("INVALID_ARGUMENTS", "controllerId is required", null)
-                return
-            }
-            
-            // TODO: Implement actual save payment method setting with Revolut SDK
-            // For now, return success to prevent crashes
-            result.success(true)
-        } catch (e: Exception) {
-            result.error("SET_SAVE_PAYMENT_METHOD_ERROR", "Failed to set save payment method: ${e.message}", null)
-        }
-    }
-
-    private fun handleContinueConfirmationFlow(call: MethodCall, result: Result) {
-        try {
-            val controllerId = call.argument<String>("controllerId") ?: ""
-            
-            if (controllerId.isEmpty()) {
-                result.error("INVALID_ARGUMENTS", "controllerId is required", null)
-                return
-            }
-            
-            // TODO: Implement actual confirmation flow continuation with Revolut SDK
-            // For now, return success to prevent crashes
-            result.success(true)
-            
-            // Send event to Flutter side
-            sendEvent("onControllerStateChange", mapOf(
-                "controllerId" to controllerId,
-                "state" to "continuing"
-            ))
-        } catch (e: Exception) {
-            result.error("CONTINUE_CONFIRMATION_FLOW_ERROR", "Failed to continue confirmation flow: ${e.message}", null)
-        }
-    }
-
-    private fun handleDisposeController(call: MethodCall, result: Result) {
-        try {
-            val controllerId = call.argument<String>("controllerId") ?: ""
-            
-            if (controllerId.isEmpty()) {
-                result.error("INVALID_ARGUMENTS", "controllerId is required", null)
-                return
-            }
-            
-            // TODO: Implement actual controller disposal with Revolut SDK
-            // For now, return success to prevent crashes
-            result.success(true)
-        } catch (e: Exception) {
-            result.error("DISPOSE_CONTROLLER_ERROR", "Failed to dispose controller: ${e.message}", null)
-        }
+    /**
+     * Honest failure for the legacy "confirmation flow" method names. The Revolut Pay
+     * Lite SDK has no manual controller/ConfirmationFlow API — these used to return fake
+     * success. Use the RevolutPayButton widget, or pay() for a custom button.
+     */
+    private fun handleUnsupportedConfirmationFlow(call: MethodCall, result: Result) {
+        val message = "'${call.method}' is not supported: the Revolut Pay Lite SDK has no manual " +
+            "confirmation-flow/controller API. Use the RevolutPayButton widget for the standard flow, " +
+            "or pay() to drive your own custom button."
+        logToDart("WARNING", message)
+        result.error("UNSUPPORTED", message, null)
     }
 
     private fun sendEvent(method: String, data: Map<String, Any>) {
@@ -783,9 +430,6 @@ class RevolutSdkBridgePlugin: FlutterPlugin, MethodCallHandler, ActivityAware, N
     fun logToDartPublic(level: String, message: String) {
         logToDart(level, message)
     }
-    
-    // Helper methods for platform view access
-    fun getButtonViews(): Map<Int, View> = buttonViews
     
     fun getActivity(): Activity? = activityBinding?.activity
 
@@ -858,6 +502,7 @@ class RevolutPayButtonView(
     private var returnUrl: String? = null
     private var shouldRequestShipping: Boolean = false
     private var savePaymentMethodForMerchant: Boolean = false
+    private var preferredMode: String? = null
     private var paymentController: RevolutPaymentController? = null
     private var componentActivity: ComponentActivity? = null
     private var revolutPayButton: com.revolut.revolutpay.api.RevolutPayButton? = null
@@ -879,6 +524,7 @@ class RevolutPayButtonView(
         returnUrl = params["returnURL"] as? String
         shouldRequestShipping = params["shouldRequestShipping"] as? Boolean ?: false
         savePaymentMethodForMerchant = params["savePaymentMethodForMerchant"] as? Boolean ?: false
+        preferredMode = params["preferredMode"] as? String
 
         val buttonParamsMap = (params["buttonParams"] as? Map<*, *>)?.toStringAnyMap()
 
@@ -1015,7 +661,8 @@ class RevolutPayButtonView(
             returnUri = returnUri,
             requestShipping = shouldRequestShipping,
             savePaymentMethodForMerchant = savePaymentMethodForMerchant,
-            customer = null
+            customer = null,
+            preferredMode = resolvePreferredMode(preferredMode)
         )
         android.util.Log.d(TAG, "✅ >>> startPayment: OrderParams built successfully")
         android.util.Log.d(TAG, ">>> startPayment: OrderParams object: $orderParams")
@@ -1299,4 +946,112 @@ class RevolutPayButtonView(
         if (value.isNullOrBlank()) return null
         return runCatching { enumValueOf<T>(value.uppercase()) }.getOrNull()
     }
+}
+
+/** Platform view factory for the Revolut Pay promotional banner */
+class RevolutPayPromoBannerViewFactory(
+    private val plugin: RevolutSdkBridgePlugin
+) : PlatformViewFactory(StandardMessageCodec.INSTANCE) {
+
+    override fun create(context: Context?, viewId: Int, args: Any?): PlatformView {
+        @Suppress("UNCHECKED_CAST")
+        val creationParams = args as? Map<String, Any?>
+        return RevolutPayPromoBannerView(context!!, creationParams, plugin)
+    }
+}
+
+/**
+ * Platform view that renders the native Revolut Pay promotional banner via
+ * RevolutPaymentsSDK.revolutPay.providePromotionalBannerWidget(...).
+ *
+ * The promotional banner requires customer details (email, phone, country) — unlike the
+ * pay button, it cannot be rendered without them.
+ */
+class RevolutPayPromoBannerView(
+    private val context: Context,
+    creationParams: Map<String, Any?>?,
+    private val plugin: RevolutSdkBridgePlugin
+) : PlatformView {
+
+    private val bannerView: View
+
+    init {
+        bannerView = try {
+            buildBanner(creationParams)
+        } catch (e: Exception) {
+            plugin.logToDartPublic("ERROR", "Failed to create promotional banner: ${e.message}")
+            View(context)
+        }
+    }
+
+    private fun buildBanner(params: Map<String, Any?>?): View {
+        val promo = (params?.get("promoParams") as? Map<*, *>)?.mapKeys { it.key.toString() }
+            ?: throw IllegalArgumentException("Missing promoParams")
+
+        val transactionId = promo["transactionId"] as? String
+            ?: throw IllegalArgumentException("Missing transactionId")
+
+        val paymentAmount = when (val amount = promo["paymentAmount"]) {
+            is Int -> amount.toLong()
+            is Long -> amount
+            is Double -> amount.toLong()
+            is String -> amount.toLongOrNull() ?: 0L
+            else -> 0L
+        }
+
+        val currency = (promo["currency"] as? String)?.uppercase()
+            ?.let { runCatching { RevolutCurrency.valueOf(it) }.getOrNull() }
+            ?: RevolutCurrency.GBP
+
+        val customerMap = (promo["customer"] as? Map<*, *>)?.mapKeys { it.key.toString() }
+            ?: throw IllegalArgumentException(
+                "Promotional banner requires customer details (email, phone, country)"
+            )
+
+        val countryCode = resolveCountryCode(customerMap["country"] as? String)
+
+        val customer = Customer(
+            name = customerMap["name"] as? String,
+            phone = (customerMap["phone"] as? String).orEmpty(),
+            email = (customerMap["email"] as? String).orEmpty(),
+            dateOfBirth = null,
+            country = countryCode
+        )
+
+        val bannerParams = PromoBannerParams(
+            transactionId = transactionId,
+            currency = currency,
+            paymentAmount = paymentAmount,
+            customer = customer
+        )
+
+        // themeId is an Android style resource (R.style.*) and is optional, so we rely on the
+        // SDK default theme. A Dart-side string cannot map to a resource id; if you need a
+        // custom banner theme, pass a style resource here and rebuild.
+        return RevolutPaymentsSDK.revolutPay.providePromotionalBannerWidget(
+            context = context,
+            params = bannerParams
+        )
+    }
+
+    private fun resolveCountryCode(code: String?): CountryCode {
+        val normalized = code?.trim()?.uppercase()
+        if (normalized.isNullOrEmpty()) return CountryCode.GB
+        return runCatching {
+            val companion = CountryCode.Companion
+            val getter = companion::class.java.getMethod("get$normalized")
+            getter.invoke(companion) as CountryCode
+        }.getOrDefault(CountryCode.GB)
+    }
+
+    override fun getView(): View = bannerView
+
+    override fun dispose() {}
+}
+
+private fun resolvePreferredMode(value: String?): PreferredMode = when (value?.trim()?.lowercase()) {
+    "retailonly", "retail-only", "retail_only" -> PreferredMode.RetailOnly
+    "business" -> PreferredMode.Business
+    "businessonly", "business-only", "business_only" -> PreferredMode.BusinessOnly
+    else -> PreferredMode.Retail
 }

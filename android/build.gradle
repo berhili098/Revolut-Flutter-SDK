@@ -1,4 +1,4 @@
-group = "com.example.revolut_sdk_bridge"
+group = "com.revolutpay.flutter"
 version = "1.0-SNAPSHOT"
 
 buildscript {
@@ -25,7 +25,7 @@ apply plugin: "com.android.library"
 apply plugin: "kotlin-android"
 
 android {
-    namespace = "com.example.revolut_sdk_bridge"
+    namespace = "com.revolutpay.flutter"
 
     compileSdk = 36
 
@@ -44,7 +44,7 @@ android {
     }
 
     defaultConfig {
-        minSdk = 24
+        minSdk = 28
     }
 
     testOptions {
@@ -64,7 +64,7 @@ dependencies {
     // Android dependencies
     implementation("androidx.activity:activity-ktx:1.9.2")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.5")
-    implementation("com.revolut.payments:revolutpaylite:3.0.0")
+    implementation("com.revolut.payments:revolutpaylite:3.2.0")
 
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("org.mockito:mockito-core:5.0.0")

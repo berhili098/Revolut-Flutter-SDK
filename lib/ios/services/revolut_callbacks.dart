@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// Callback service for Revolut SDK operations
@@ -34,7 +35,7 @@ class RevolutCallbacksIos {
           onLog?.call(logEntry);
 
           // Also print to console for debugging
-          print('Revolut SDK Log: $logEntry');
+          debugPrint('Revolut SDK Log: $logEntry');
         }
         break;
 
@@ -46,12 +47,12 @@ class RevolutCallbacksIos {
           onPaymentResult?.call(paymentResult);
 
           // Also print to console for debugging
-          print('Revolut Payment Result: $paymentResult');
+          debugPrint('Revolut Payment Result: $paymentResult');
         }
         break;
 
       default:
-        print('Unknown method call: ${call.method}');
+        debugPrint('Unknown method call: ${call.method}');
     }
   }
 }
