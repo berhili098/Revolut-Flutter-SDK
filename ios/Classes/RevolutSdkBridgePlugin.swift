@@ -2,6 +2,16 @@ import Flutter
 import UIKit
 import RevolutPayments
 
+fileprivate func maskKey(_ value: String?) -> String {
+    guard let value = value, !value.isEmpty else { return "UNSET" }
+    guard value.count > 8 else { return "****" }
+    return "\(value.prefix(6))...(len=\(value.count))"
+}
+
+fileprivate func nowMillis() -> Int {
+    return Int(Date().timeIntervalSince1970 * 1000)
+}
+
 public class RevolutSdkBridgePlugin: NSObject, FlutterPlugin {
     
     private var revolutPayKit: RevolutPayKit?
@@ -91,14 +101,30 @@ public class RevolutSdkBridgePlugin: NSObject, FlutterPlugin {
         
         // Test with invalid keys to see if validation works
         if merchantPublicKey == "test" || merchantPublicKey == "invalid" || merchantPublicKey.count < 10 {
-            logToDart("WARNING", "Using potentially invalid merchant key: \(merchantPublicKey)")
+            logToDart("WARNING", "Using potentially invalid merchant key: \(maskKey(merchantPublicKey))")
         }
-        
-        // Get environment from arguments (default to sandbox)
-        let environment = args["environment"] as? String ?? "sandbox"
-        let revolutEnvironment: RevolutPaymentsSDK.Environment = environment == "production" ? .production : .sandbox
-        
-        logToDart("INFO", "Initializing Revolut Pay SDK with merchant public key: \(merchantPublicKey), environment: \(environment)")
+
+        // Get environment from arguments (default to sandbox); accept the same
+        // aliases as the Android implementation so both platforms resolve the
+        // same environment for a given input.
+        let environmentRaw = args["environment"] as? String ?? "sandbox"
+        let environment = environmentRaw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let revolutEnvironment: RevolutPaymentsSDK.Environment
+        let resolvedEnvironmentLabel: String
+        switch environment {
+        case "production", "prod", "live", "main":
+            revolutEnvironment = .production
+            resolvedEnvironmentLabel = "production"
+        case "sandbox", "test", "testing", "dev", "development", "":
+            revolutEnvironment = .sandbox
+            resolvedEnvironmentLabel = "sandbox"
+        default:
+            logToDart("WARNING", "Unknown environment '\(environmentRaw)', defaulting to sandbox")
+            revolutEnvironment = .sandbox
+            resolvedEnvironmentLabel = "sandbox"
+        }
+
+        logToDart("INFO", "Initializing Revolut Pay SDK with merchant public key: \(maskKey(merchantPublicKey)), environment: \(environmentRaw) (sdk=\(resolvedEnvironmentLabel))")
         
         // Configure the SDK according to official documentation
         RevolutPaymentsSDK.configure(
@@ -119,9 +145,8 @@ public class RevolutSdkBridgePlugin: NSObject, FlutterPlugin {
         
         // Store the kit only if validation passes
         revolutPayKit = testKit
-        
-        logToDart("SUCCESS", "Revolut Pay SDK initialized successfully with merchant key: \(merchantPublicKey)")
-        logToDart("INFO", "RevolutPayKit instance created and validated: \(testKit)")
+
+        logToDart("SUCCESS", "Revolut Pay SDK initialized successfully with merchant key: \(maskKey(merchantPublicKey))")
         result(true)
     }
     
@@ -150,8 +175,8 @@ public class RevolutSdkBridgePlugin: NSObject, FlutterPlugin {
         let merchantLogoURL = args["merchantLogoURL"] as? String
         let additionalData = args["additionalData"] as? [String: Any]
         
-        logToDart("INFO", "Creating Revolut Pay button with order token: \(orderToken)")
-        logToDart("INFO", "Button parameters - Amount: \(amount) \(currency), Email: \(email), Shipping: \(shouldRequestShipping), Save: \(savePaymentMethodForMerchant)")
+        logToDart("INFO", "Creating Revolut Pay button with order token: \(maskKey(orderToken))")
+        logToDart("INFO", "Button parameters - Amount: \(amount) \(currency), Shipping: \(shouldRequestShipping), Save: \(savePaymentMethodForMerchant)")
         
         // Generate the view ID first
         let viewId = nextViewId
@@ -163,7 +188,7 @@ public class RevolutSdkBridgePlugin: NSObject, FlutterPlugin {
             returnURL: returnURL,
             savePaymentMethodForMerchant: savePaymentMethodForMerchant,
             createOrder: { [weak self] createOrderHandler in
-                self?.logToDart("INFO", "Setting order token: \(orderToken)")
+                self?.logToDart("INFO", "Setting order token: \(maskKey(orderToken))")
                 createOrderHandler.set(orderToken: orderToken)
             },
             completion: { [weak self] result in
@@ -197,7 +222,7 @@ public class RevolutSdkBridgePlugin: NSObject, FlutterPlugin {
             "email": email,
             "shouldRequestShipping": shouldRequestShipping,
             "savePaymentMethodForMerchant": savePaymentMethodForMerchant,
-            "returnURL": returnURL ?? "revolut-sdk-bridge://revolut-pay",
+            "returnURL": returnURL,
             "merchantName": merchantName ?? "",
             "merchantLogoURL": merchantLogoURL ?? "",
             "additionalData": additionalData ?? [:],
@@ -233,28 +258,28 @@ public class RevolutSdkBridgePlugin: NSObject, FlutterPlugin {
                 "success": true,
                 "message": "Payment completed successfully",
                 "error": "",
-                "timestamp": Date().timeIntervalSince1970
+                "timestamp": nowMillis()
             ]
         case .failure(let error):
             resultData = [
                 "success": false,
                 "message": "Payment failed",
                 "error": error.localizedDescription,
-                "timestamp": Date().timeIntervalSince1970
+                "timestamp": nowMillis()
             ]
         case .userAbandonedPayment:
             resultData = [
                 "success": false,
                 "message": "Payment abandoned by user",
                 "error": "user_abandoned_payment",
-                "timestamp": Date().timeIntervalSince1970
+                "timestamp": nowMillis()
             ]
         @unknown default:
             resultData = [
                 "success": false,
                 "message": "Unknown payment result",
                 "error": "unknown",
-                "timestamp": Date().timeIntervalSince1970
+                "timestamp": nowMillis()
             ]
         }
         logChannel?.invokeMethod("onPaymentResult", arguments: resultData)
@@ -268,35 +293,39 @@ public class RevolutSdkBridgePlugin: NSObject, FlutterPlugin {
     
     /// Clean up and recreate a specific button
     func recreateButton(viewId: Int) -> Bool {
+        buttonViewInstances.removeValue(forKey: viewId)
+
         guard let oldButton = buttonViews[viewId] else {
             logToDart("WARNING", "Button with viewId \(viewId) not found for recreation")
             return false
         }
-        
+
         // Remove the old button
         buttonViews.removeValue(forKey: viewId)
         oldButton.removeFromSuperview()
-        
+
         logToDart("INFO", "Cleaned up old button with viewId: \(viewId)")
         return true
     }
-    
+
     /// Clean up all buttons (useful for complete refresh)
+    /// Note: the view-id counter is intentionally NOT reset — reusing ids would
+    /// collide with payment channels of platform views that are still alive.
     func cleanupAllButtons() {
         for (viewId, button) in buttonViews {
             button.removeFromSuperview()
             logToDart("INFO", "Cleaned up button with viewId: \(viewId)")
         }
         buttonViews.removeAll()
-        nextViewId = 1 // Reset the ID counter
-        logToDart("INFO", "All buttons cleaned up, ID counter reset")
+        buttonViewInstances.removeAll()
+        logToDart("INFO", "All buttons cleaned up")
     }
     
     private func logToDart(_ level: String, _ message: String) {
         let logData: [String: Any] = [
             "level": level,
             "message": message,
-            "timestamp": Date().timeIntervalSince1970,
+            "timestamp": nowMillis(),
             "source": "iOS_Plugin"
         ]
         
@@ -339,7 +368,7 @@ public class RevolutSdkBridgePlugin: NSObject, FlutterPlugin {
         let savePaymentMethodForMerchant = args["savePaymentMethodForMerchant"] as? Bool ?? false
         let returnURL = args["returnURL"] as? String ?? "revolut-sdk-bridge://revolut-pay"
 
-        logToDart("INFO", "Starting headless Revolut Pay for order token: \(orderToken)")
+        logToDart("INFO", "Starting headless Revolut Pay for order token: \(maskKey(orderToken))")
         revolutPayKit.pay(
             orderToken: orderToken,
             returnURL: returnURL,
@@ -410,7 +439,7 @@ class RevolutPayButtonViewFactory: NSObject, FlutterPlatformViewFactory {
         logChannel?.invokeMethod("onLog", arguments: [
             "level": "INFO",
             "message": "Creating platform view with ID: \(viewId), frame: \(frame)",
-            "timestamp": Date().timeIntervalSince1970,
+            "timestamp": nowMillis(),
             "source": "iOS_ButtonViewFactory"
         ])
         
@@ -423,7 +452,7 @@ class RevolutPayButtonViewFactory: NSObject, FlutterPlatformViewFactory {
             logChannel?.invokeMethod("onLog", arguments: [
                 "level": "INFO",
                 "message": "Stored button view instance for button ID: \(buttonId)",
-                "timestamp": Date().timeIntervalSince1970,
+                "timestamp": nowMillis(),
                 "source": "iOS_ButtonViewFactory"
             ])
         }
@@ -459,7 +488,7 @@ class RevolutPayButtonView: NSObject, FlutterPlatformView {
         logChannel?.invokeMethod("onLog", arguments: [
             "level": "INFO",
             "message": "Platform view created with Flutter ID: \(viewId), looking for button ID: \(buttonId ?? -1)",
-            "timestamp": Date().timeIntervalSince1970,
+            "timestamp": nowMillis(),
             "source": "iOS_ButtonView"
         ])
         
@@ -471,7 +500,7 @@ class RevolutPayButtonView: NSObject, FlutterPlatformView {
             logChannel?.invokeMethod("onLog", arguments: [
                 "level": "SUCCESS",
                 "message": "Found actual Revolut Pay button with ID: \(buttonId)",
-                "timestamp": Date().timeIntervalSince1970,
+                "timestamp": nowMillis(),
                 "source": "iOS_ButtonView"
             ])
         } else {
@@ -479,7 +508,7 @@ class RevolutPayButtonView: NSObject, FlutterPlatformView {
             logChannel?.invokeMethod("onLog", arguments: [
                 "level": "WARNING",
                 "message": "Using placeholder button - button ID \(buttonId ?? -1) not found in buttonViews",
-                "timestamp": Date().timeIntervalSince1970,
+                "timestamp": nowMillis(),
                 "source": "iOS_ButtonView"
             ])
             
@@ -514,7 +543,7 @@ class RevolutPayButtonView: NSObject, FlutterPlatformView {
         logChannel?.invokeMethod("onLog", arguments: [
             "level": "INFO",
             "message": "Revolut Pay button view created with ID: \(viewId)",
-            "timestamp": Date().timeIntervalSince1970,
+            "timestamp": nowMillis(),
             "source": "iOS_ButtonView"
         ])
         
@@ -535,28 +564,28 @@ class RevolutPayButtonView: NSObject, FlutterPlatformView {
                 "success": true,
                 "message": "Payment completed successfully",
                 "error": "",
-                "timestamp": Date().timeIntervalSince1970
+                "timestamp": nowMillis()
             ]
         case .failure(let error):
             resultData = [
                 "success": false,
                 "message": "Payment failed",
                 "error": error.localizedDescription,
-                "timestamp": Date().timeIntervalSince1970
+                "timestamp": nowMillis()
             ]
         case .userAbandonedPayment:
             resultData = [
                 "success": false,
                 "message": "Payment abandoned by user",
                 "error": "User cancelled the payment",
-                "timestamp": Date().timeIntervalSince1970
+                "timestamp": nowMillis()
             ]
         @unknown default:
             resultData = [
                 "success": false,
                 "message": "Unknown payment result",
                 "error": "Unexpected payment result: \(result)",
-                "timestamp": Date().timeIntervalSince1970
+                "timestamp": nowMillis()
             ]
         }
         
@@ -567,7 +596,7 @@ class RevolutPayButtonView: NSObject, FlutterPlatformView {
         logChannel?.invokeMethod("onLog", arguments: [
             "level": "INFO",
             "message": "Payment result sent to Flutter view \(viewId): \(resultData)",
-            "timestamp": Date().timeIntervalSince1970,
+            "timestamp": nowMillis(),
             "source": "iOS_ButtonView"
         ])
     }

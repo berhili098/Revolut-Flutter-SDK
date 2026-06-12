@@ -33,6 +33,8 @@ class CrossPlatformRevolutPayButton extends StatelessWidget {
   final EdgeInsetsGeometry? margin;
   final EdgeInsetsGeometry? padding;
   final BorderRadius? borderRadius;
+  final Widget? loadingWidget;
+  final Widget? placeholderWidget;
 
   // Callbacks
   final VoidCallback? onPressed;
@@ -62,6 +64,8 @@ class CrossPlatformRevolutPayButton extends StatelessWidget {
     this.margin,
     this.padding,
     this.borderRadius,
+    this.loadingWidget,
+    this.placeholderWidget,
     this.onPressed,
     this.onError,
     this.onPaymentResult,
@@ -121,6 +125,8 @@ class CrossPlatformRevolutPayButton extends StatelessWidget {
           padding: padding,
           borderRadius: borderRadius,
         ),
+        loadingWidget: loadingWidget,
+        placeholderWidget: placeholderWidget,
         onPaymentResult: onPaymentResult != null
             ? (result) => onPaymentResult!({
                 'success': result.success,

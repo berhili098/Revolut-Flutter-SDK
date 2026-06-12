@@ -180,6 +180,7 @@ class _RevolutPayButtonState extends State<RevolutPayButton> {
       padding: widget.padding,
       decoration: widget.decoration,
       child: AndroidView(
+        key: ValueKey(widget.orderToken),
         viewType: _viewType,
         onPlatformViewCreated: _onPlatformViewCreated,
         creationParams: creationParams,

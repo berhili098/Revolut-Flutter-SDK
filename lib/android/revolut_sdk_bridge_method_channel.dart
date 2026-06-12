@@ -59,8 +59,8 @@ class RevolutSdkBridgeMethodChannel {
 
       if (result is bool) {
         return result;
-      } else if (result is Map<String, dynamic>) {
-        return result['success'] as bool? ?? false;
+      } else if (result is Map) {
+        return _ensureStringDynamicMap(result)['success'] as bool? ?? false;
       }
       return false;
     } on PlatformException catch (e) {
@@ -81,8 +81,8 @@ class RevolutSdkBridgeMethodChannel {
     try {
       final result = await _channel.invokeMethod('createController');
 
-      if (result is Map<String, dynamic>) {
-        return ControllerResultData.fromMap(result);
+      if (result is Map) {
+        return ControllerResultData.fromMap(_ensureStringDynamicMap(result));
       }
       throw FormatException('Invalid response format from native side');
     } on PlatformException catch (e) {
@@ -108,8 +108,8 @@ class RevolutSdkBridgeMethodChannel {
 
       if (result is bool) {
         return result;
-      } else if (result is Map<String, dynamic>) {
-        return result['success'] as bool? ?? false;
+      } else if (result is Map) {
+        return _ensureStringDynamicMap(result)['success'] as bool? ?? false;
       }
       return false;
     } on PlatformException catch (e) {
@@ -210,8 +210,9 @@ class RevolutSdkBridgeMethodChannel {
 
       if (result is bool) {
         return result;
-      } else if (result is Map<String, dynamic>) {
-        return result['success'] as bool? ?? false;
+      } else if (result is Map) {
+        final map = _ensureStringDynamicMap(result);
+        return map['success'] as bool? ?? map['status'] == 'initiated';
       }
       return false;
     } on PlatformException catch (e) {
@@ -232,8 +233,8 @@ class RevolutSdkBridgeMethodChannel {
     try {
       final result = await _channel.invokeMethod('provideButton', {'buttonParams': buttonParams});
 
-      if (result is Map<String, dynamic>) {
-        return ButtonResultData.fromMap(result);
+      if (result is Map) {
+        return ButtonResultData.fromMap(_ensureStringDynamicMap(result));
       }
       throw FormatException('Invalid response format from native side');
     } on PlatformException catch (e) {
@@ -257,8 +258,8 @@ class RevolutSdkBridgeMethodChannel {
         'themeId': themeId,
       });
 
-      if (result is Map<String, dynamic>) {
-        return BannerResultData.fromMap(result);
+      if (result is Map) {
+        return BannerResultData.fromMap(_ensureStringDynamicMap(result));
       }
       throw FormatException('Invalid response format from native side');
     } on PlatformException catch (e) {
@@ -280,8 +281,8 @@ class RevolutSdkBridgeMethodChannel {
 
       if (result is bool) {
         return result;
-      } else if (result is Map<String, dynamic>) {
-        return result['success'] as bool? ?? false;
+      } else if (result is Map) {
+        return _ensureStringDynamicMap(result)['success'] as bool? ?? false;
       }
       return false;
     } on PlatformException catch (e) {
@@ -306,8 +307,8 @@ class RevolutSdkBridgeMethodChannel {
 
       if (result is bool) {
         return result;
-      } else if (result is Map<String, dynamic>) {
-        return result['success'] as bool? ?? false;
+      } else if (result is Map) {
+        return _ensureStringDynamicMap(result)['success'] as bool? ?? false;
       }
       return false;
     } on PlatformException catch (e) {
@@ -326,6 +327,7 @@ class RevolutSdkBridgeMethodChannel {
         final json = jsonDecode(event);
         _handleNativeEvent(json);
       } catch (_) {}
+      return;
     }
     if (event is Map<Object?, Object?> && event is! Map<String, dynamic>) {
       try {

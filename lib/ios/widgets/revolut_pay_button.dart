@@ -126,6 +126,7 @@ class RevolutPayButtonStyleIos {
 class _RevolutPayButtonIosState extends State<RevolutPayButtonIos> {
   Map<String, dynamic>? _buttonConfig;
   bool _isLoading = true;
+  int? _nativeButtonId;
 
   /// Channel that receives payment results from the native button. It is created
   /// once the native button exists, using a per-button name so that multiple
@@ -139,8 +140,17 @@ class _RevolutPayButtonIosState extends State<RevolutPayButtonIos> {
   }
 
   @override
+  void didUpdateWidget(RevolutPayButtonIos oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.config.orderToken != widget.config.orderToken) {
+      _recreateButton();
+    }
+  }
+
+  @override
   void dispose() {
     _paymentChannel?.setMethodCallHandler(null);
+    _releaseNativeButton();
     super.dispose();
   }
 
@@ -150,9 +160,28 @@ class _RevolutPayButtonIosState extends State<RevolutPayButtonIos> {
       return widget.loadingWidget ?? _buildDefaultLoading();
     }
     if (_buttonConfig == null) {
-      return widget.placeholderWidget ?? _buildDefaultLoading();
+      return widget.placeholderWidget ?? _buildDefaultPlaceholder();
     }
     return _buildIOSButton();
+  }
+
+  void _releaseNativeButton() {
+    final buttonId = _nativeButtonId;
+    _nativeButtonId = null;
+    if (buttonId != null) {
+      RevolutSdkBridgeIos.cleanupButtonIos(buttonId).catchError((_) => false);
+    }
+  }
+
+  Future<void> _recreateButton() async {
+    _paymentChannel?.setMethodCallHandler(null);
+    _paymentChannel = null;
+    _releaseNativeButton();
+    setState(() {
+      _buttonConfig = null;
+      _isLoading = true;
+    });
+    await _createButton();
   }
 
   Future<void> _createButton() async {
@@ -172,10 +201,17 @@ class _RevolutPayButtonIosState extends State<RevolutPayButtonIos> {
         additionalData: widget.config.additionalData,
       );
 
-      if (!mounted) return;
+      if (!mounted) {
+        final viewId = result?['viewId'];
+        if (result?['buttonCreated'] == true && viewId is int) {
+          RevolutSdkBridgeIos.cleanupButtonIos(viewId).catchError((_) => false);
+        }
+        return;
+      }
 
       if (result != null && result['buttonCreated'] == true) {
         final viewId = result['viewId'];
+        _nativeButtonId = viewId is int ? viewId : null;
         _paymentChannel = MethodChannel('revolut_pay_button_payment_$viewId')
           ..setMethodCallHandler(_handlePaymentChannelCall);
 
@@ -245,6 +281,7 @@ class _RevolutPayButtonIosState extends State<RevolutPayButtonIos> {
       width: widget.style?.width,
       margin: widget.style?.margin,
       child: UiKitView(
+        key: ValueKey(_buttonConfig!['viewId']),
         viewType: 'revolut_pay_button',
         creationParams: creationParams,
         creationParamsCodec: const StandardMessageCodec(),
@@ -252,26 +289,51 @@ class _RevolutPayButtonIosState extends State<RevolutPayButtonIos> {
     );
   }
 
-  Widget _buildDefaultLoading() {
+  /// Skeleton matching the size and shape of the final native button, so the
+  /// loading and unavailable states don't render as a lone spinner.
+  Widget _buildButtonShell({required Widget child}) {
     return Container(
       height: widget.style?.height ?? 50,
-      width: widget.style?.width,
+      width: widget.style?.width ?? double.infinity,
       margin: widget.style?.margin,
-      padding: widget.style?.padding ?? const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: widget.style?.backgroundColor ?? Colors.grey[300],
-        borderRadius: widget.style?.borderRadius ?? BorderRadius.circular(8),
+        color: widget.style?.backgroundColor ?? Colors.black,
+        borderRadius: widget.style?.borderRadius ?? BorderRadius.circular(12),
         border: widget.style?.border,
         boxShadow: widget.style?.boxShadow,
       ),
+      child: child,
+    );
+  }
+
+  Widget _buildDefaultLoading() {
+    return _buildButtonShell(
       child: Center(
         child: SizedBox(
-          width: 20,
-          height: 20,
+          width: 22,
+          height: 22,
           child: CircularProgressIndicator(
             strokeWidth: 2,
             valueColor: AlwaysStoppedAnimation<Color>(
-              widget.style?.textColor ?? Colors.grey[600]!,
+              widget.style?.textColor ?? Colors.white,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDefaultPlaceholder() {
+    return Opacity(
+      opacity: 0.45,
+      child: _buildButtonShell(
+        child: Center(
+          child: Text(
+            'Revolut Pay',
+            style: TextStyle(
+              color: widget.style?.textColor ?? Colors.white,
+              fontSize: widget.style?.fontSize ?? 16,
+              fontWeight: widget.style?.fontWeight ?? FontWeight.w600,
             ),
           ),
         ),
